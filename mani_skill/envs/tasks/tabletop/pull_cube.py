@@ -155,13 +155,12 @@ class PullCubeEnv(BaseEnv):
     def _setup_sensors(self, options: dict):
         # 首先调用父类方法设置基本传感器
         super()._setup_sensors(options)
-        print("\n========== PullCubeEnv: 开始设置传感器 ==========")
-        print(f"当前传感器列表: {list(self._sensors.keys())}")
+
         
         # 在机器人加载后创建并挂载末端摄像头
         # 获取 TCP 链接作为挂载点
         tcp_link = self.agent.tcp
-        print(f"获取到TCP链接: {tcp_link}, 类型: {type(tcp_link)}")
+
         
         import math
         angle = math.radians(60)  # 60 度转弧度
@@ -181,10 +180,10 @@ class PullCubeEnv(BaseEnv):
         # from mani_skill.utils.sapien_utils import look_at
         # camera_pose = look_at(
         #     eye=[-0.15, 0, -0.15],  # 在夹爪前方(X负方向)上方(Z正方向)
-        #     target=[0.05, 0, 0.01]  # 视线指向夹爪和操作区域
+        #     target=[0.05, 0, 0.01]  # 视线指向夹爪和操作区域``
         # )
         
-        print(f"相机位姿: {camera_pose}")
+
         
         # 使用正确的配置方式创建摄像头
         phone_camera_config = CameraConfig(
@@ -198,14 +197,12 @@ class PullCubeEnv(BaseEnv):
             mount=tcp_link  # 直接在配置中指定挂载点
         )
         
-        print(f"创建相机配置: {phone_camera_config}")
+
         
         # 创建并添加到传感器列表
         from mani_skill.sensors.camera import Camera
         phone_camera = Camera(phone_camera_config, self.scene, self.agent.robot)
         self._sensors["phone_camera"] = phone_camera
         
-        print(f"已成功将摄像头 'phone_camera' 安装到机械臂末端")
-        print(f"安装后传感器列表: {list(self._sensors.keys())}")
-        print("========== PullCubeEnv: 传感器设置完成 ==========\n")
+
         

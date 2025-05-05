@@ -27,7 +27,7 @@ class ManiskillEnv():
         cameras: List,
         shape_meta: Dict,
         obs_mode: str = "rgb+segmentation",
-        control_mode: str = "pd_joint_pos",# 非常重要
+        control_mode: str = "pd_joint_delta_pos",# 非常重要
         render_mode: str = "rgb_array",
         reward_mode: Optional[str] = "dense",
         shader: str = "default",
@@ -85,8 +85,8 @@ class ManiskillEnv():
         )
         
 
-        if hasattr(self.env.unwrapped, 'agent') and hasattr(self.env.unwrapped, 'control_mode'):
-            print(f"控制模式: {self.env.unwrapped.control_mode}")
+        # if hasattr(self.env.unwrapped, 'agent') and hasattr(self.env.unwrapped, 'control_mode'):
+        #     print(f"控制模式: {self.env.unwrapped.control_mode}")
         
         # 初始化空间
         self._init_observation_space()
@@ -138,7 +138,7 @@ class ManiskillEnv():
     def _init_action_space(self):
         """
         初始化动作空间
-        使用7维动作空间(xyz位置+欧拉角+夹爪)，与zarr数据格式保持一致
+        使用7维动作空间(xyz位置+欧拉角+夹爪)
         """
         # 创建与配置一致的7维动作空间(xyz位置+欧拉角+夹爪)
         # 动作格式: [dx, dy, dz, drx, dry, drz, gripper]
@@ -251,13 +251,13 @@ class ManiskillEnv():
             try:
                 import matplotlib.pyplot as plt
                 # 使用唯一的图像ID，避免多次显示同一窗口
-                plt.figure(f"{target_camera}_camera_view", figsize=(8, 8))
-                plt.clf()  # 清除当前图形
-                plt.imshow(rgb)
-                plt.title(f"{target_camera} 相机图像")
-                plt.axis('off')  # 关闭坐标轴
-                plt.draw()
-                plt.pause(0.001)  # 短暂暂停，让图像能够显示
+                # plt.figure(f"{target_camera}_camera_view", figsize=(8, 8))
+                # plt.clf()  # 清除当前图形
+                # plt.imshow(rgb)
+                # plt.title(f"{target_camera} 相机图像")
+                # plt.axis('off')  # 关闭坐标轴
+                # plt.draw()
+                # plt.pause(0.001)  # 短暂暂停，让图像能够显示
             except Exception as e:
                 print(f"显示图像时出错: {e}")
             
@@ -276,14 +276,13 @@ class ManiskillEnv():
             # 使用matplotlib显示掩码图像
             try:
                 import matplotlib.pyplot as plt
-                plt.figure(f"{target_camera}_mask_view", figsize=(8, 8))
-                plt.clf()
-                plt.imshow(mask, cmap='gray')
-                plt.title(f"{target_camera} 掩码图像")
-                plt.axis('off')
-                plt.draw()
-                plt.pause(0.001)
-                print(f"已显示 {target_camera} 掩码图像，窗口大小: {mask.shape}")
+                # plt.figure(f"{target_camera}_mask_view", figsize=(8, 8))
+                # plt.clf()
+                # plt.imshow(mask, cmap='gray')
+                # plt.title(f"{target_camera} 掩码图像")
+                # plt.axis('off')
+                # plt.draw()
+                # plt.pause(0.001)
             except Exception as e:
                 print(f"显示掩码图像时出错: {e}")
     
@@ -292,42 +291,31 @@ class ManiskillEnv():
     def step(self, action):
         """执行一步动作"""
         try:
-            # 如果是多步动作序列，只取第一步
-            if isinstance(action, np.ndarray) and len(action.shape) == 2 and action.shape[0] > 1:
-                action = action[0]
-            
-            # 检查是否有控制器并尝试使用
-            has_controller = hasattr(self.env.unwrapped, 'agent') and hasattr(self.env.unwrapped.agent, 'controller')
-            if has_controller:
-                # 先尝试使用控制器转换动作
-                try:
-                    # 将动作转换为控制器需要的字典格式
-                    if isinstance(action, np.ndarray) and len(action.shape) == 1 and action.shape[0] == 7:
-                        # 提取动作分量
-                        translation = action[:3]
-                        rotation_euler = action[3:6]
-                        gripper_action = action[6]
-                        
-                        # 构建动作字典
-                        action_dict = {
-                            'arm': np.concatenate([translation, rotation_euler]),
-                            'gripper': gripper_action
-                        }
-                        
-                        # 转换为Tensor
-                        import torch
-                        action_dict = {k: torch.tensor(v, dtype=torch.float32) for k, v in action_dict.items()}
-                        
-                        # 使用控制器转换动作
-                        controller_action = self.env.unwrapped.agent.controller.from_action_dict(action_dict)
-                except Exception as e:
-                    print(f"控制器转换出错: {e}")
-                    controller_action = None
+            # 将动作转换为控制器需要的字典格式
+            if action.shape[0] == 7:
+                # 提取动作分量
+                translation = action[:3]
+                rotation_euler = action[3: 6]
+                gripper_action = action[6]
+                
+                # 构建动作字典
+                action_dict = {
+                    'arm': np.concatenate([translation, rotation_euler]),
+                    'gripper': gripper_action
+                }
+                
+                # 转换为Tensor
+                import torch
+                action_dict = {k: torch.tensor(v, dtype=torch.float32) for k, v in action_dict.items()}
+                
+                # 使用控制器转换动作
+                controller_action = self.env.unwrapped.agent.controller.from_action_dict(action_dict)
             # 最后一个维度是额外信息，没什么用
-            controller_action = np.concatenate([controller_action, [0]])
-            controller_action = torch.tensor(controller_action, dtype=torch.float32)
-            action = controller_action
-            
+            if controller_action.shape[0] == 7:
+                controller_action = np.concatenate([controller_action, [0]])
+                controller_action = torch.tensor(controller_action, dtype=torch.float32)
+                action = controller_action
+                
             # 执行环境step
             result = self.env.step(action)
             
@@ -340,7 +328,7 @@ class ManiskillEnv():
                 
             # 处理观察数据
             processed_obs = self._process_obs(obs)
-            processed_obs = self._ensure_obs_keys(processed_obs)
+            #processed_obs = self._ensure_obs_keys(processed_obs)
             
             # 保存当前观察
             self.obs_buffer = processed_obs
@@ -352,7 +340,7 @@ class ManiskillEnv():
             return processed_obs, reward, done, info
             
         except Exception as e:
-            print(f"环境step出错：{e}")
+            print(f"环境step出错:{e}")
             import traceback
             traceback.print_exc()
             # 创建一个空观察作为fallback

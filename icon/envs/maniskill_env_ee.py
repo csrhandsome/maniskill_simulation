@@ -6,12 +6,13 @@ from mani_skill.envs.sapien_env import BaseEnv
 from scipy.spatial.transform import Rotation as R
 from typing import Dict, Optional, Union, Tuple, Literal, List
 import sapien
+import torch
 
 def task_to_env_name(task: str) -> str:
     if task == 'lift_peg_upright':
-        return 'lift_peg_upright-v1'
+        return 'LiftPegUpright-v1'
     if task == 'peg_insertion_side':
-        return 'peg_insertion_side-v1'
+        return 'PegInsertionSide-v1'
     elif task == 'pull_cube':
         return 'PullCube-v1'
     elif task == 'stack_cube':
@@ -25,8 +26,8 @@ class ManiskillEnv():
         task: str,
         cameras: List,
         shape_meta: Dict,
-        obs_mode: str = "rgb",
-        control_mode: str = "pd_joint_pos",
+        obs_mode: str = "rgb+segmentation",
+        control_mode: str = "pd_joint_delta_pos",# 非常重要
         render_mode: str = "rgb_array",
         reward_mode: Optional[str] = "dense",
         shader: str = "default",
@@ -34,9 +35,9 @@ class ManiskillEnv():
         render_camera: Optional[str] = 'frontview',
         gpu_id: Union[int, None] = None,
         robot: str = "panda",
-        action_mode: str = "delta_ee_pose",
         render_size: int = 512,
-        image_mask_keys: List[str] = None
+        image_mask_keys: List[str] = None,
+        enable_sapien_viewer: bool = True
     ) -> None:
         self.cameras = cameras
         self.shape_meta = shape_meta
@@ -44,9 +45,9 @@ class ManiskillEnv():
         self.render_mode = render_mode
         self.render_cache = None
         self.robot = robot
-        self.action_mode = action_mode
         self.render_size = render_size
         self.image_mask_keys = image_mask_keys or ['front_camera_masks']  # 默认使用front_camera_masks
+        self.enable_sapien_viewer = enable_sapien_viewer
         
         # 为了与MultiStepWrapper兼容，设置这些属性
         self.enable_temporal_ensemble = False
@@ -62,6 +63,15 @@ class ManiskillEnv():
         # 获取环境ID
         env_id = task_to_env_name(task)
         
+        # 确保控制模式与action_mode一致
+        # 注意：ManiSkill环境接受的控制模式与我们的action_mode可能不同
+        # 常见的控制模式包括：
+        # - pd_joint_pos: 控制关节角度
+        # - pd_joint_delta_pos: 控制关节角度增量
+        # - pd_ee_pose: 控制末端姿态(xyz位置+四元数)
+        # - pd_ee_delta_pose: 控制末端姿态增量
+        self.control_mode = control_mode
+        
         self.env = gym.make(
             env_id,
             obs_mode=obs_mode,
@@ -73,6 +83,10 @@ class ManiskillEnv():
             viewer_camera_configs=dict(shader_pack=shader),
             sim_backend=sim_backend
         )
+        
+
+        if hasattr(self.env.unwrapped, 'agent') and hasattr(self.env.unwrapped, 'control_mode'):
+            print(f"控制模式: {self.env.unwrapped.control_mode}")
         
         # 初始化空间
         self._init_observation_space()
@@ -122,10 +136,15 @@ class ManiskillEnv():
         self._observation_space = spaces.Dict(obs_spaces)
 
     def _init_action_space(self):
-        """初始化动作空间"""
-        # 创建与配置一致的7维动作空间(delta_ee_pose + gripper)
-        # 注意：内部ManiSkill环境期望8维动作(position + quaternion + gripper)
-        # 但我们对外暴露7维动作空间(position + euler + gripper)以与其他环境保持一致
+        """
+        初始化动作空间
+        使用7维动作空间(xyz位置+欧拉角+夹爪)
+        """
+        # 创建与配置一致的7维动作空间(xyz位置+欧拉角+夹爪)
+        # 动作格式: [dx, dy, dz, drx, dry, drz, gripper]
+        # dx, dy, dz: 末端执行器位置变化
+        # drx, dry, drz: 末端执行器欧拉角变化 (xyz顺序)
+        # gripper: 夹爪状态 (0-关闭, 1-打开)
         if 'actions' in self.shape_meta:
             action_dim = self.shape_meta['actions']
             self._action_space = spaces.Box(
@@ -146,7 +165,6 @@ class ManiskillEnv():
     def reset(self, seed=None, options=None):
         """重置环境"""
         result = self.env.reset(seed=seed, options=options)
-        
         # 处理新版本gymnasium返回的(obs, info)格式
         if isinstance(result, tuple) and len(result) == 2:
             obs, info = result
@@ -163,6 +181,10 @@ class ManiskillEnv():
         # 保存当前观察作为缓冲区
         self.obs_buffer = processed_obs
         
+        # 如果启用了Sapien查看器，渲染当前环境状态
+        if self.enable_sapien_viewer:
+            self.env.render_human()
+        
         return processed_obs
     
     def _process_obs(self, obs):
@@ -172,196 +194,195 @@ class ManiskillEnv():
         以及MultiStepWrapper的要求
         """
         processed_obs = {}
-        
+
         # 1. 处理低维度观察数据 (low_dims)
-        if hasattr(self, 'shape_meta') and 'low_dims' in self.shape_meta:
-            # 创建低维状态向量
-            low_dim_array = np.zeros(self.shape_meta['low_dims'], dtype=np.float32)
+        # 创建低维状态向量
+        low_dim_array = np.zeros(14, dtype=np.float32)
+
+        try:
+            # 获取关节位置（前7维）
+            qpos = obs['agent']['qpos']
+            qpos = qpos.cpu().numpy().flatten()    
+            low_dim_array[:7] = qpos[:7]
             
-            try:
-                # 提取关节位置和夹爪状态
-                if 'agent' in obs and 'qpos' in obs['agent']:
-                    qpos = obs['agent']['qpos']
-                    if hasattr(qpos, 'cpu'):
-                        qpos = qpos.cpu().numpy()
-                    
-                    # 处理qpos数据，确保是一维数组
-                    qpos_flat = qpos.flatten() if hasattr(qpos, 'flatten') else qpos
-                    
-                    # 复制关节位置（确保不超出数组长度）
-                    joint_pos_len = min(7, len(qpos_flat), len(low_dim_array))
-                    low_dim_array[:joint_pos_len] = qpos_flat[:joint_pos_len]
-                    
-                    # 夹爪状态通常是qpos的最后部分
-                    if len(qpos_flat) > 7:
-                        gripper_idx = min(13, len(low_dim_array) - 1)  # 确保索引有效
-                        low_dim_array[gripper_idx] = qpos_flat[7]
-                
-                # 提取TCP姿态
-                if 'extra' in obs and 'tcp_pose' in obs['extra']:
-                    tcp_pose = obs['extra']['tcp_pose']
-                    if hasattr(tcp_pose, 'cpu'):
-                        tcp_pose = tcp_pose.cpu().numpy()
-                    
-                    # 处理tcp_pose数据，确保是一维数组
-                    tcp_pose_flat = tcp_pose.flatten() if hasattr(tcp_pose, 'flatten') else tcp_pose
-                    
-                    # TCP位置 (前3个元素)
-                    if len(tcp_pose_flat) >= 3:
-                        pos_idx = min(7, len(low_dim_array) - 3)
-                        pos_len = min(3, len(low_dim_array) - pos_idx)
-                        low_dim_array[pos_idx:pos_idx+pos_len] = tcp_pose_flat[:pos_len]
-                    
-                    # TCP方向 (四元数转欧拉角)
-                    if len(tcp_pose_flat) >= 7:
-                        rot_idx = min(10, len(low_dim_array) - 3)
-                        try:
-                            rot = R.from_quat(tcp_pose_flat[3:7])
-                            euler = rot.as_euler('xyz')
-                            rot_len = min(3, len(low_dim_array) - rot_idx)
-                            low_dim_array[rot_idx:rot_idx+rot_len] = euler[:rot_len]
-                        except Exception as e:
-                            print(f"四元数转欧拉角出错: {e}")
-            except Exception as e:
-                print(f"处理低维观测数据时出错: {e}")
+            # 设置夹爪状态（第14维）
+            low_dim_array[13] = qpos[7]
+
+            # 提取TCP姿态
+            tcp_pose = obs['extra']['tcp_pose']
+            tcp_pose = tcp_pose.cpu().numpy().flatten()
             
-            # 保存最终的低维数组
-            processed_obs['low_dims'] = low_dim_array
+            # TCP位置 (第7-9维)
+            low_dim_array[7:10] = tcp_pose[:3]
+            
+            # TCP方向 - 将四元数转换为欧拉角 (第10-12维)
+            rot = R.from_quat(tcp_pose[3:7])
+            euler = rot.as_euler('xyz')
+            low_dim_array[10:13] = euler
+            
+        except Exception as e:
+            print(f"处理低维观测数据时出错: {e}")
+
+        # 保存最终的低维数组
+        processed_obs['low_dims'] = low_dim_array
         
         # 2. 处理图像数据
         # 这里进行图像处理，确保摄像机图像以正确的格式和键名存在
-        if 'sensor_data' in obs:
-            for env_camera, target_camera in self.camera_mapping.items():
-                if env_camera in obs['sensor_data'] and 'rgb' in obs['sensor_data'][env_camera]:
-                    # 获取RGB图像
-                    rgb = obs['sensor_data'][env_camera]['rgb']
-                    
-                    # 确保是numpy数组
-                    if hasattr(rgb, 'cpu'):
-                        rgb = rgb.cpu().numpy()
-                    
-                    # 转换格式并确保是正确的维度 [H, W, C]
-                    if rgb.ndim > 3:  # 可能有batch维度，去掉
-                        rgb = rgb.squeeze()
-                    
-                    # 有时图像可能是[C, H, W]格式，需要转换
-                    if rgb.shape[0] == 3 and rgb.ndim == 3:
-                        rgb = np.transpose(rgb, (1, 2, 0))
-                    
-                    # 确保图像是uint8类型，范围0-255
-                    if rgb.dtype != np.uint8:
-                        if rgb.max() <= 1.0:
-                            rgb = (rgb * 255).astype(np.uint8)
-                        else:
-                            rgb = np.clip(rgb, 0, 255).astype(np.uint8)
-                    
-                    # 保存图像
-                    processed_obs[f'{target_camera}_images'] = rgb
-                    
-                    # 3. 处理掩码数据（如果有）
-                    if 'segmentation' in obs['sensor_data'][env_camera]:
-                        seg = obs['sensor_data'][env_camera]['segmentation']
-                        
-                        # 确保是numpy数组
-                        if hasattr(seg, 'cpu'):
-                            seg = seg.cpu().numpy()
-                        
-                        # 确保正确的维度
-                        if seg.ndim > 3:
-                            seg = seg.squeeze()
-                        
-                        # 如果是多通道图像，取第一个通道
-                        if seg.ndim == 3 and seg.shape[-1] > 1:
-                            seg = seg[..., 0]
-                        
-                        # 创建二值掩码：机器人ID通常是特定值
-                        robot_ids = [1, 2, 10, 12, 14, 16, 17, 18, 19]  # 这些可能需要根据环境调整
-                        mask = np.isin(seg, robot_ids).astype(np.uint8)
-                        
-                        # 保存掩码
-                        if f'{target_camera}_masks' in self.image_mask_keys:
-                            processed_obs[f'{target_camera}_masks'] = mask
-        
+
+        for env_camera, target_camera in self.camera_mapping.items():
+            # 获取RGB图像
+            rgb = obs['sensor_data'][env_camera]['rgb']
+            rgb = rgb.cpu().numpy()
+            
+            # 转换格式并确保是正确的维度 [H, W, C]
+
+            rgb = rgb.squeeze()# 有batch维度，去掉（256, 256, 3)
+            # 确保图像是uint8类型，范围0-255
+            if rgb.dtype != np.uint8:
+                if rgb.max() <= 1.0:
+                    rgb = (rgb * 255).astype(np.uint8)
+                else:
+                    rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+            
+            # 保存图像
+            processed_obs[f'{target_camera}_images'] = rgb
+            
+            # 使用matplotlib显示相机拍摄的图像
+            try:
+                import matplotlib.pyplot as plt
+                # 使用唯一的图像ID，避免多次显示同一窗口
+                # plt.figure(f"{target_camera}_camera_view", figsize=(8, 8))
+                # plt.clf()  # 清除当前图形
+                # plt.imshow(rgb)
+                # plt.title(f"{target_camera} 相机图像")
+                # plt.axis('off')  # 关闭坐标轴
+                # plt.draw()
+                # plt.pause(0.001)  # 短暂暂停，让图像能够显示
+            except Exception as e:
+                print(f"显示图像时出错: {e}")
+            
+            # 3. 处理掩码数据
+            segment = obs['sensor_data'][env_camera]['segmentation']
+            
+            # 确保是numpy数组
+            segment = segment.cpu().numpy()
+            # 确保正确的维度
+            segment = segment.squeeze()
+            # 创建二值掩码：机器人ID通常是特定值
+            robot_objects_ids = [1,2,3,4,5,6,7,8,9,10,12,14,18,19]# 14前面是机械臂,要把16，17删了,16是桌子,17是背景的地面
+            #robot_ids = [1, 2, 10, 12, 14, 16, 17, 18, 19] 
+            mask = np.isin(segment, robot_objects_ids).astype(np.uint8)
+            processed_obs[f'{target_camera}_masks'] = mask
+            # 使用matplotlib显示掩码图像
+            try:
+                import matplotlib.pyplot as plt
+                # plt.figure(f"{target_camera}_mask_view", figsize=(8, 8))
+                # plt.clf()
+                # plt.imshow(mask, cmap='gray')
+                # plt.title(f"{target_camera} 掩码图像")
+                # plt.axis('off')
+                # plt.draw()
+                # plt.pause(0.001)
+            except Exception as e:
+                print(f"显示掩码图像时出错: {e}")
+    
         return processed_obs
     
     def step(self, action):
         """执行一步动作"""
-        # 检查动作形状
-        if isinstance(action, np.ndarray):
-            # 处理不同形状的动作
-            if len(action.shape) == 2 and action.shape[0] > 1:
-                # 如果是动作序列，例如(action_horizon, action_dim)，只取第一个动作
-                action = action[0]  # 变为(action_dim,)
-            
-            # 确保action是一维数组
-            action_flat = action.reshape(-1) if len(action.shape) > 1 else action
-            
-            # 如果是7维动作(delta_ee_pose + gripper)，处理为ManiSkill格式
-            if action_flat.shape[0] == 7:
-                # 分解为平移、旋转和夹爪
-                translation = action_flat[:3]
-                rotation_euler = action_flat[3:6]
-                gripper_action = np.array([action_flat[6]])
-                
-                # 将欧拉角转换为四元数
-                rotation_quat = R.from_euler('xyz', rotation_euler).as_quat()
-                
-                # 合并为ManiSkill格式的动作（8维：xyz位置、xyzw四元数、夹爪）
-                maniskill_action = np.concatenate([translation, rotation_quat, gripper_action])
-                
-                # 添加batch维度
-                maniskill_action = maniskill_action.reshape(1, -1)
-                action = maniskill_action
-            elif action_flat.shape[0] != 8:
-                # 如果不是7维或8维，尝试调整为8维
-                print(f"警告：收到的动作维度为{action_flat.shape[0]}，期望7或8维")
-                # 尝试填充到8维动作
-                pad_action = np.zeros(8)
-                pad_action[:min(len(action_flat), 8)] = action_flat[:min(len(action_flat), 8)]
-                action = pad_action.reshape(1, -1)
-            else:
-                # 如果已经是8维，确保有batch维度
-                action = action_flat.reshape(1, -1)
-        else:
-            print(f"警告：收到非numpy数组类型的动作：{type(action)}")
-            # 创建零动作
-            action = np.zeros((1, 8))
-        
-        # 执行环境的step
         try:
+            # 如果是多步动作序列，只取第一步
+            if isinstance(action, np.ndarray) and len(action.shape) == 2 and action.shape[0] > 1:
+                action = action[0]
+            
+            # 初始化controller_action，避免未定义错误
+            controller_action = None
+            
+            # 检查是否有控制器并尝试使用
+            has_controller = hasattr(self.env.unwrapped, 'agent') and hasattr(self.env.unwrapped.agent, 'controller')
+            if has_controller:
+                # 先尝试使用控制器转换动作
+                try:
+                    # 将动作转换为控制器需要的字典格式
+                    if isinstance(action, np.ndarray) and len(action.shape) == 1 and action.shape[0] >= 7:
+                        # 提取动作分量
+                        translation = action[:3]
+                        rotation_euler = action[3:6]
+                        gripper_action = action[6]
+                        
+                        # 构建动作字典
+                        action_dict = {
+                            'arm': np.concatenate([translation, rotation_euler]),
+                            'gripper': gripper_action
+                        }
+                        
+                        # 转换为Tensor
+                        import torch
+                        action_dict = {k: torch.tensor(v, dtype=torch.float32) for k, v in action_dict.items()}
+                        
+                        # 使用控制器转换动作
+                        controller_action = self.env.unwrapped.agent.controller.from_action_dict(action_dict)
+                except Exception as e:
+                    print(f"控制器转换出错: {e}")
+                    controller_action = None
+            
+            # 对于pd_ee_delta_pos控制模式，需要转换为[pos(3), gripper(1)]格式
+            # 使用位置部分+夹爪
+            pos = controller_action[:3]
+            gripper = controller_action[6:7]
+            # 创建(1,4)形状的动作，忽略欧拉角部分
+            formatted_action = np.concatenate([pos, gripper])
+            # 添加批处理维度
+            formatted_action = formatted_action.reshape(1, -1)
+            # 转换为Tensor
+            action = torch.tensor(formatted_action, dtype=torch.float32)
+            
+            # 执行环境step
             result = self.env.step(action)
+            
+            # 处理gymnasium格式的返回值
+            if len(result) == 5:
+                obs, reward, terminated, truncated, info = result
+                done = terminated or truncated
+            else:
+                obs, reward, done, info = result
+                
+            # 处理观察数据
+            processed_obs = self._process_obs(obs)
+            processed_obs = self._ensure_obs_keys(processed_obs)
+            
+            # 保存当前观察
+            self.obs_buffer = processed_obs
+            
+            # 如果启用了Sapien查看器，渲染当前环境状态
+            if self.enable_sapien_viewer:
+                self.env.render_human()
+            
+            return processed_obs, reward, done, info
+            
         except Exception as e:
-            print(f"环境step出错：{e}，动作形状：{action.shape if isinstance(action, np.ndarray) else '非numpy数组'}")
-            # 如果出错，尝试用零动作
-            action = np.zeros((1, 8))
-            result = self.env.step(action)
-        
-        # 处理gymnasium格式的返回值
-        if len(result) == 5:
-            obs, reward, terminated, truncated, info = result
-            # 转换为老格式
-            done = terminated or truncated
-        elif len(result) == 4:
-            obs, reward, done, info = result
-        else:
-            raise ValueError(f"环境返回值格式异常：{result}")
-        
-        # 处理观察数据
-        processed_obs = self._process_obs(obs)
-        
-        # 确保所有必要的键都存在
-        processed_obs = self._ensure_obs_keys(processed_obs)
-        
-        # 保存当前观察
-        self.obs_buffer = processed_obs
-        
-        return processed_obs, reward, done, info
+            print(f"环境step出错：{e}")
+            import traceback
+            traceback.print_exc()
+            # 创建一个空观察作为fallback
+            if self.obs_buffer is not None:
+                return self.obs_buffer, 0.0, True, {"error": str(e)}
+            else:
+                # 如果没有缓存的观察，尝试创建一个基本的观察结构
+                dummy_obs = self._ensure_obs_keys({})
+                return dummy_obs, 0.0, True, {"error": str(e)}
     
     def render(self):
         """渲染环境"""
+        # 如果启用了Sapien查看器，也渲染一下
+        if self.enable_sapien_viewer:
+            self.env.render_human()
+            
         # 获取原始渲染结果
         frame = self.env.render()
-        
+        #print(f'frame: {frame}')
+        #print(f'frame type: {type(frame)}')
+        #print(f'frame shape: {frame.shape}')
         # 确保帧数据是numpy数组，并且类型是uint8
         if frame is not None:
             # 如果是PyTorch张量，转换为numpy

@@ -17,10 +17,12 @@ env_runner:
     task: ${task_name}
     cameras: ${task.cameras}
     shape_meta: ${task.shape_meta}
+    image_mask_keys: ${task.image_mask_keys}
     robot: "panda"
-    action_mode: "delta_ee_pose"
+    control_mode: "pd_joint_delta_pos"
     render_mode: "rgb_array"
     render_size: 512
+    obs_mode: "rgb+segmentation"
     
   obs_horizon: ${algo.obs_horizon}
   action_horizon: ${algo.action_horizon}

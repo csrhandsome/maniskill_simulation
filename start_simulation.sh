@@ -1,0 +1,6 @@
+python -m examples.demo_manual_control -e PullCube-v1 --render-mode="sensors" --enable-sapien-viewer --record-dir 'data/PullCube/train'
+python -m examples.demo_manual_control -e AssemblingKits-v1 --render-mode="sensors" --enable-sapien-viewer --record-dir 'data/AssemblingKits/train'
+python -m examples.demo_manual_control -e LiftPegUpright-v1 --render-mode="sensors" --enable-sapien-viewer --record-dir 'data/LiftPegUpright/train'
+python -m examples.demo_manual_control -e PlaceSphere-v1 --render-mode="sensors" --enable-sapien-viewer --record-dir 'data/PlaceSphere/train'
+python -m examples.demo_manual_control -e PushT-v1 --render-mode="sensors" --enable-sapien-viewer --record-dir 'data/PushT/train'
+python -m examples.demo_manual_control -e PegInsertionSide --render-mode="sensors" --enable-sapien-viewer --record-dir 'data/PegInsertionSide/train'

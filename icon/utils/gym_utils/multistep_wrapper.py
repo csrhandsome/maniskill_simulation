@@ -165,7 +165,10 @@ class MultiStepWrapper(gym.Wrapper):
         reward = aggregate(self.reward, self.reward_agg_method)
         # if done != True:
         #     done = aggregate(self.done, 'max')
-        done = aggregate(self.done, 'max')
+        try:
+            done = aggregate(self.done, 'max')
+        except:
+            done = False
         info = dict_take_last_n(self.info, self.obs_horizon)
         return obs, reward, done, info
 

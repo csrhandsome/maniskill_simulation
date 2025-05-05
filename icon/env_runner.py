@@ -6,6 +6,9 @@ from typing import Optional, Union, Dict
 from icon.utils.gym_utils.multistep_wrapper import MultiStepWrapper
 from icon.utils.gym_utils.video_recording_wrapper import VideoRecordingWrapper
 from icon.utils.pytorch_utils import to
+import os
+import matplotlib.pyplot as plt
+import cv2
 
 
 class EnvRunner:
@@ -15,7 +18,7 @@ class EnvRunner:
         env: gym.Env,
         obs_horizon: int,
         action_horizon: int,
-        max_episode_steps: Optional[int] = 2000,
+        max_episode_steps: Optional[int] = 200,
         num_trials: Optional[int] = 50,
         initial_seed: Optional[int] = 10000,
         video_save_dir: Union[str, None] = None
@@ -71,6 +74,10 @@ class EnvRunner:
 
         success = 0
         
+        # 创建一个目录用于保存可视化图像
+        vis_dir = "/tmp/maniskill_vis"
+        os.makedirs(vis_dir, exist_ok=True)
+        
         for t in range(self.num_trials):
         # for t in episodes:
             seed = self.initial_seed + t
@@ -84,7 +91,7 @@ class EnvRunner:
             )
             done = False
             steps = 0
-            while not done:
+            while not done and steps < self.max_episode_steps:  # 添加steps上限检查
                 obs = self._process_obs(obs)
                 to(obs, device)
                 with torch.no_grad():
