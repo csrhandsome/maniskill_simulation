@@ -1,0 +1,30 @@
+name: open_door
+num_cameras: 2
+cameras:
+  - 'agentview'
+  - 'robot0_eye_in_hand'
+shape_meta:
+  images: 256
+  low_dims: 9
+  actions: 7
+image_mask_keys:
+  - 'agentview_masks'
+env_runner:
+  _target_: icon.env_runner.EnvRunner
+  env: 
+    _target_: icon.envs.robosuite_env.RobosuiteEnv
+    task: ${task_name}
+    cameras: ${task.cameras}
+    shape_meta: ${task.shape_meta}
+    robot: "Panda"
+    controller: "OSC_POSE"
+    render_mode: "rgb_array"
+    render_camera: "frontview"
+    gpu_id: 0
+    
+  obs_horizon: ${algo.obs_horizon}
+  action_horizon: ${algo.action_horizon}
+  max_episode_steps: 300
+  num_trials: 50
+  initial_seed: 100
+  video_save_dir: videos/${task_name}/${algo_name}

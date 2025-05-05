@@ -1,0 +1,6 @@
+python -m mani_skill.examples.demo_manual_control -e PullCube-v1 --render-mode="sensors" --enable-sapien-viewer --control-freq 24 --sim-freq 240 --record-dir 'data/PullCube/train'
+python -m mani_skill.examples.demo_manual_control -e PegInsertionSide-v1 --render-mode="sensors" --enable-sapien-viewer --control-freq 24 --sim-freq 240 --record-dir 'data/PegInsertionSide/train'
+python -m mani_skill.examples.demo_manual_control -e LiftPegUpright-v1 --render-mode="sensors" --enable-sapien-viewer --control-freq 24 --sim-freq 240 --record-dir 'data/LiftPegUpright/train'
+python -m mani_skill.examples.demo_manual_control -e AssemblingKits-v1 --render-mode="sensors" --enable-sapien-viewer --control-freq 24 --sim-freq 240 --record-dir 'data/AssemblingKits/train'
+python -m mani_skill.examples.demo_manual_control -e PlaceSphere-v1 --render-mode="sensors" --enable-sapien-viewer --control-freq 24 --sim-freq 240 --record-dir 'data/PlaceSphere/train'
+python -m mani_skill.examples.demo_manual_control -e PushT-v1 --render-mode="sensors" --enable-sapien-viewer --control-freq 24 --sim-freq 240 --record-dir 'data/PushT/train'

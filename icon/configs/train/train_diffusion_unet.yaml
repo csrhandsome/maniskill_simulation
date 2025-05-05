@@ -1,0 +1,58 @@
+seed: 42
+device: "cuda:5"
+batch_size: 64
+num_epochs: 600
+
+dataset:
+  _target_: icon.utils.datasets.EpisodicDataset
+  cameras: ${task.cameras}
+  prediction_horizon: ${algo.prediction_horizon}
+  obs_horizon: ${algo.obs_horizon}
+  action_horizon: ${algo.action_horizon}
+  image_mask_keys: []
+
+val:
+  enable: true
+  ckpt_manager:
+    _target_: icon.utils.file_utils.CheckpointManager
+    save_dir: outputs/${task_name}/${algo_name}/${now:%Y-%m-%d}/${now:%H-%M-%S}/checkpoints
+    val_freq: 50
+    topk: 10
+    mode: "min"
+    save_last: true
+
+optimizer:
+  learning_rate: 1e-4
+  obs_encoder_weight_decay: 1e-6
+  noise_predictor_weight_decay: 1e-6
+  betas:
+    - 0.95
+    - 0.999
+  
+lr_scheduler:
+  _target_: icon.utils.train_utils.get_scheduler
+  name: "cosine"
+  num_warmup_steps: 500
+
+ema:
+  enable: true
+  runner:
+    _target_: icon.utils.train_utils.EMA
+    update_after_step: 0
+    inv_gamma: 1.0
+    power: 0.75
+    min_value: 0.0
+    max_value: 0.9999
+
+wandb:
+  enable: false
+  logging:
+    project: "policy_training"
+    resume: True
+    mode: online
+    name: ${task_name}_${algo_name}_${now:%Y.%m.%d-%H.%M.%S}
+    tags:
+      - ${task_name}
+      - ${algo_name}
+    id: null
+    group: null

@@ -1,0 +1,211 @@
+from typing import Any, Dict, Union
+
+import numpy as np
+import sapien
+import torch
+import torch.random
+from transforms3d.euler import euler2quat
+
+from mani_skill.agents.robots import Fetch, Panda
+from mani_skill.envs.sapien_env import BaseEnv
+from mani_skill.sensors.camera import CameraConfig
+from mani_skill.utils.building import actors
+from mani_skill.utils.registration import register_env
+from mani_skill.utils.sapien_utils import look_at
+from mani_skill.utils.scene_builder.table import TableSceneBuilder
+from mani_skill.utils.structs.pose import Pose
+from mani_skill.utils.structs.types import Array
+
+
+@register_env("PullCube-v1", max_episode_steps=201)
+class PullCubeEnv(BaseEnv):
+    """
+    **Task Description:**
+    A simple task where the objective is to pull a cube onto a target.
+
+    **Randomizations:**
+    - the cube's xy position is randomized on top of a table in the region [0.1, 0.1] x [-0.1, -0.1].
+    - the target goal region is marked by a red and white target. The position of the target is fixed to be the cube's xy position - [0.1 + goal_radius, 0]
+
+    **Success Conditions:**
+    - the cube's xy position is within goal_radius (default 0.1) of the target's xy position by euclidean distance.
+    """
+
+    _sample_video_link = "https://github.com/haosulab/ManiSkill/raw/main/figures/environment_demos/PullCube-v1_rt.mp4"
+    SUPPORTED_ROBOTS = ["panda", "fetch"]
+    agent: Union[Panda, Fetch]
+    goal_radius = 0.1
+    cube_half_size = 0.02
+
+    def __init__(self, *args, robot_uids="panda", robot_init_qpos_noise=0.02, **kwargs):
+        self.robot_init_qpos_noise = robot_init_qpos_noise
+        super().__init__(*args, robot_uids=robot_uids, **kwargs)
+
+    @property
+    def _default_human_render_camera_configs(self):
+        pose = look_at([0.6, 0.7, 0.6], [0.0, 0.0, 0.35])
+        return CameraConfig("render_camera", pose, 256, 256, 1, 0.01, 100)
+
+    def _load_agent(self, options: dict):
+        super()._load_agent(options, sapien.Pose(p=[-0.615, 0, 0]))
+
+    def _load_scene(self, options: dict):
+        self.table_scene = TableSceneBuilder(
+            env=self, robot_init_qpos_noise=self.robot_init_qpos_noise
+        )
+        self.table_scene.build()
+
+        # create cube
+        self.obj = actors.build_cube(
+            self.scene,
+            half_size=self.cube_half_size,
+            color=np.array([12, 42, 160, 255]) / 255,
+            name="cube",
+            body_type="dynamic",
+            initial_pose=sapien.Pose(p=[0, 0, self.cube_half_size]),
+        )
+
+        # create target
+        self.goal_region = actors.build_red_white_target(
+            self.scene,
+            radius=self.goal_radius,
+            thickness=1e-5,
+            name="goal_region",
+            add_collision=False,
+            body_type="kinematic",
+        )
+
+    def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
+        with torch.device(self.device):
+            b = len(env_idx)
+            self.table_scene.initialize(env_idx)
+            xyz = torch.zeros((b, 3))
+            xyz[..., :2] = torch.rand((b, 2)) * 0.2 - 0.1
+            xyz[..., 2] = self.cube_half_size
+            q = [1, 0, 0, 0]
+
+            obj_pose = Pose.create_from_pq(p=xyz, q=q)
+            self.obj.set_pose(obj_pose)
+
+            target_region_xyz = xyz - torch.tensor([0.1 + self.goal_radius, 0, 0])
+
+            target_region_xyz[..., 2] = 1e-3
+            self.goal_region.set_pose(
+                Pose.create_from_pq(
+                    p=target_region_xyz,
+                    q=euler2quat(0, np.pi / 2, 0),
+                )
+            )
+
+    def evaluate(self):
+        is_obj_placed = (
+            torch.linalg.norm(
+                self.obj.pose.p[..., :2] - self.goal_region.pose.p[..., :2], axis=1
+            )
+            < self.goal_radius
+        )
+
+        return {
+            "success": is_obj_placed,
+        }
+
+    def _get_obs_extra(self, info: Dict):
+        obs = dict(
+            tcp_pose=self.agent.tcp.pose.raw_pose,
+            goal_pos=self.goal_region.pose.p,
+        )
+        if self.obs_mode_struct.use_state:
+            obs.update(
+                obj_pose=self.obj.pose.raw_pose,
+            )
+        return obs
+
+    def compute_dense_reward(self, obs: Any, action: Array, info: Dict):
+        # grippers should close and pull from behind the cube, not grip it
+        # distance to backside of cube (+ 2*0.005) sufficiently encourages this
+        tcp_pull_pos = self.obj.pose.p + torch.tensor(
+            [self.cube_half_size + 2 * 0.005, 0, 0], device=self.device
+        )
+        tcp_to_pull_pose = tcp_pull_pos - self.agent.tcp.pose.p
+        tcp_to_pull_pose_dist = torch.linalg.norm(tcp_to_pull_pose, axis=1)
+        reaching_reward = 1 - torch.tanh(5 * tcp_to_pull_pose_dist)
+        reward = reaching_reward
+
+        reached = tcp_to_pull_pose_dist < 0.01
+        obj_to_goal_dist = torch.linalg.norm(
+            self.obj.pose.p[..., :2] - self.goal_region.pose.p[..., :2], axis=1
+        )
+        place_reward = 1 - torch.tanh(5 * obj_to_goal_dist)
+        reward += place_reward * reached
+
+        reward[info["success"]] = 3
+        return reward
+
+    def compute_normalized_dense_reward(self, obs: Any, action: Array, info: Dict):
+        max_reward = 3.0
+        return self.compute_dense_reward(obs=obs, action=action, info=info) / max_reward
+    
+    @property
+    def _default_sensor_configs(self):
+        upper_camera_pose = look_at(eye=[0.2, -0.3, 0.2], target=[-0.1, 0, 0.1])
+        upper_camera_config = CameraConfig("upper_camera", upper_camera_pose,
+                                            256, 256, np.pi / 2, 0.01, 100)
+        return [upper_camera_config]
+    
+    def _setup_sensors(self, options: dict):
+        # 首先调用父类方法设置基本传感器
+        super()._setup_sensors(options)
+        print("\n========== PullCubeEnv: 开始设置传感器 ==========")
+        print(f"当前传感器列表: {list(self._sensors.keys())}")
+        
+        # 在机器人加载后创建并挂载末端摄像头
+        # 获取 TCP 链接作为挂载点
+        tcp_link = self.agent.tcp
+        print(f"获取到TCP链接: {tcp_link}, 类型: {type(tcp_link)}")
+        
+        import math
+        angle = math.radians(60)  # 60 度转弧度
+        q = [
+            math.sin(angle/2),  # X 分量
+            0,                  # Y 分量
+            -math.sin(angle/2), # Z 分量
+            math.cos(angle/2)   # W 分量
+        ]
+        # 方法一：使用sapien.Pose直接设置相机位姿
+        camera_pose = sapien.Pose(
+                p=[-0.15, 0, -0.15],  # 在夹爪前方(X负方向)上方(Z正方向)
+                q=[0.9071068, 0, -0.9071068, 0]  # 相机朝向夹爪方向，稍微俯视
+            )
+        
+        # 方法二：使用look_at函数设置相机位姿
+        # from mani_skill.utils.sapien_utils import look_at
+        # camera_pose = look_at(
+        #     eye=[-0.15, 0, -0.15],  # 在夹爪前方(X负方向)上方(Z正方向)
+        #     target=[0.05, 0, 0.01]  # 视线指向夹爪和操作区域
+        # )
+        
+        print(f"相机位姿: {camera_pose}")
+        
+        # 使用正确的配置方式创建摄像头
+        phone_camera_config = CameraConfig(
+            uid="phone_camera",
+            pose=camera_pose,
+            width=256,
+            height=256,
+            fov=np.pi / 2,
+            near=0.01,
+            far=100,
+            mount=tcp_link  # 直接在配置中指定挂载点
+        )
+        
+        print(f"创建相机配置: {phone_camera_config}")
+        
+        # 创建并添加到传感器列表
+        from mani_skill.sensors.camera import Camera
+        phone_camera = Camera(phone_camera_config, self.scene, self.agent.robot)
+        self._sensors["phone_camera"] = phone_camera
+        
+        print(f"已成功将摄像头 'phone_camera' 安装到机械臂末端")
+        print(f"安装后传感器列表: {list(self._sensors.keys())}")
+        print("========== PullCubeEnv: 传感器设置完成 ==========\n")
+        

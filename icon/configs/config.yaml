@@ -1,0 +1,15 @@
+defaults:
+  - _self_
+  - task: close_drawer
+  - algo: icon_diffusion_transformer
+  - train: train_${algo}
+  - dataloader: default
+
+_target_: icon.workspace.Workspace
+
+task_name: ${task.name}
+algo_name: ${algo.name}
+
+hydra:
+  run:
+    dir: outputs/${task_name}/${algo_name}/${now:%Y-%m-%d}/${now:%H-%M-%S}

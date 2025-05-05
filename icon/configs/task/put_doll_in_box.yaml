@@ -1,0 +1,9 @@
+name: put_doll_in_box
+num_cameras: 2
+cameras:
+  - 'front_camera'
+  - 'wrist_camera'
+shape_meta:
+  images: 256
+  low_dims: 7
+  actions: 7

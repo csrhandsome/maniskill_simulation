@@ -1,0 +1,55 @@
+name: diffusion_transformer
+
+obs_horizon: 2
+action_horizon: 8
+prediction_horizon: 10
+
+policy:
+  _target_: icon.policies.diffusion_transformer_policy.DiffusionTransformerPolicy
+
+  obs_encoder:
+    _target_: icon.models.observation.obs_encoder.MultiModalObsEncoder
+
+    image_encoder:
+      _target_: icon.models.observation.image_encoder.MultiViewImageEncoder
+      backbone:
+        _target_: icon.models.observation.image_encoder.ViT
+        img_size: 224
+        patch_size: 16
+        embed_dim: 384
+        depth: 12
+        num_heads: 6
+        
+      cameras: ${task.cameras}
+      resize_shape: ${task.shape_meta.images}
+      crop_shape: ${..image_encoder.backbone.img_size}
+      
+    low_dim_shape: ${task.shape_meta.low_dims}
+    low_dim_embed_dim: 128
+    flatten_features: false
+
+  noise_predictor:
+    _target_: icon.models.diffusion.transformer.TransformerForDiffusion
+    obs_horizon: ${algo.obs_horizon}
+    prediction_horizon: ${algo.prediction_horizon}
+    input_dim: ${task.shape_meta.actions}
+    cond_dim: ${eval:'${algo.policy.obs_encoder.image_encoder.backbone.embed_dim} * ${task.num_cameras} + ${algo.policy.obs_encoder.low_dim_embed_dim}'}
+    embed_dim: 256
+    num_heads: 4
+    num_encoder_layers: 0
+    num_decoder_layers: 8
+    causal_attn: true
+
+  noise_scheduler:
+      _target_: diffusers.schedulers.scheduling_ddim.DDIMScheduler
+      num_train_timesteps: 100
+      beta_start: 0.0001
+      beta_end: 0.02
+      beta_schedule: "squaredcos_cap_v2"
+      prediction_type: "epsilon"
+
+  obs_horizon: ${algo.obs_horizon}
+  prediction_horizon: ${algo.prediction_horizon}
+  action_horizon: ${algo.action_horizon}
+  action_dim: ${task.shape_meta.actions}
+  num_inference_timesteps: 100

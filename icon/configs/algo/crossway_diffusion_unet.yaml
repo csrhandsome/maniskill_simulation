@@ -1,0 +1,68 @@
+name: crossway_diffusion_unet
+
+obs_horizon: 2
+action_horizon: 8
+prediction_horizon: 16
+
+policy:
+  _target_: icon.policies.diffusion_unet_policy.AEDiffusionUnetPolicy
+
+  obs_encoder:
+    _target_: icon.models.observation.obs_encoder.MultiModalObsEncoder
+
+    image_encoder:
+      _target_: icon.models.observation.image_encoder.MultiViewImageEncoder
+      backbone:
+        _target_: icon.models.observation.image_encoder.ViT
+        img_size: 224
+        patch_size: 16
+        embed_dim: 384
+        depth: 12
+        num_heads: 6
+        
+      cameras: ${task.cameras}
+      resize_shape: ${task.shape_meta.images}
+      crop_shape: ${..image_encoder.backbone.img_size}
+      
+    low_dim_shape: ${task.shape_meta.low_dims}
+    low_dim_embed_dim: 128
+    flatten_features: true
+
+  noise_predictor:
+    _target_: icon.models.diffusion.unet.ConditionalUnet1DwDec
+    input_dim: ${task.shape_meta.actions}
+    obs_cond_dim: ${eval:'(${algo.policy.obs_encoder.image_encoder.backbone.embed_dim} * ${task.num_cameras} + ${algo.policy.obs_encoder.low_dim_embed_dim}) * ${algo.obs_horizon}'}
+    timestep_embed_dim: 128
+    down_dims: 
+      - 256
+      - 512
+      - 1024
+    kernel_size: 5
+    n_groups: 8
+    obs_horizon: ${algo.obs_horizon}
+    cameras: ${task.cameras}
+    shape_meta: ${task.shape_meta}
+    decode_dims:
+      - 64
+      - 128
+    decode_low_dim_dims:
+      - 4
+      - 2
+      - 1
+    decode_pe_dim: 64
+    decode_resolution: 2
+
+  noise_scheduler:
+      _target_: diffusers.schedulers.scheduling_ddim.DDIMScheduler
+      num_train_timesteps: 100
+      beta_start: 0.0001
+      beta_end: 0.02
+      beta_schedule: "squaredcos_cap_v2"
+      prediction_type: "epsilon"
+
+  obs_horizon: ${algo.obs_horizon}
+  prediction_horizon: ${algo.prediction_horizon}
+  action_horizon: ${algo.action_horizon}
+  action_dim: ${task.shape_meta.actions}
+  num_inference_timesteps: 8
+  recons_loss_coef: 0.1

@@ -1,0 +1,30 @@
+name: place_sphere
+num_cameras: 2
+cameras:
+  - 'front_camera'
+  - 'wrist_camera'
+shape_meta:
+  images: 256
+  low_dims: 14
+  actions: 7
+image_mask_keys:
+  - 'front_camera_masks'
+  - 'wrist_camera_masks'
+env_runner:
+  _target_: icon.env_runner.EnvRunner
+  env: 
+    _target_: icon.envs.maniskill_env.ManiskillEnv
+    task: ${task_name}
+    cameras: ${task.cameras}
+    shape_meta: ${task.shape_meta}
+    robot: "panda"
+    action_mode: "delta_ee_pose"
+    render_mode: "rgb_array"
+    render_size: 512
+    
+  obs_horizon: ${algo.obs_horizon}
+  action_horizon: ${algo.action_horizon}
+  max_episode_steps: 200
+  num_trials: 50
+  initial_seed: 100
+  video_save_dir: videos/${task_name}/${algo_name}
