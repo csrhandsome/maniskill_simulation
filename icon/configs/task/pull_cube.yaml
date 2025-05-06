@@ -26,7 +26,7 @@ env_runner:
     
   obs_horizon: ${algo.obs_horizon}
   action_horizon: ${algo.action_horizon}
-  max_episode_steps: 200
+  max_episode_steps: 50
   num_trials: 50
   initial_seed: 100
   video_save_dir: videos/${task_name}/${algo_name}

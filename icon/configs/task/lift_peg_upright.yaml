@@ -19,14 +19,14 @@ env_runner:
     shape_meta: ${task.shape_meta}
     image_mask_keys: ${task.image_mask_keys}
     robot: "panda"
-    control_mode: "pd_joint_pos"
+    control_mode: "pd_joint_delta_pos"
     render_mode: "rgb_array"
     render_size: 512
     obs_mode: "rgb+segmentation"
     
   obs_horizon: ${algo.obs_horizon}
   action_horizon: ${algo.action_horizon}
-  max_episode_steps: 200
+  max_episode_steps: 100
   num_trials: 50
   initial_seed: 100
   video_save_dir: videos/${task_name}/${algo_name}

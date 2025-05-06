@@ -7,16 +7,6 @@ from scipy.spatial.transform import Rotation as R
 from typing import Dict, Optional, Union, Tuple, Literal, List
 import sapien
 import torch
-import tqdm
-import traceback
-from mani_skill.trajectory.utils.actions import conversion as action_conversion
-from mani_skill.agents.controllers import (
-    PDEEPosController,
-    PDEEPoseController,
-    PDJointPosController,
-    PDJointVelController,
-)
-from mani_skill.utils import common
 
 def task_to_env_name(task: str) -> str:
     if task == 'lift_peg_upright':
@@ -47,10 +37,7 @@ class ManiskillEnv():
         robot: str = "panda",
         render_size: int = 512,
         image_mask_keys: List[str] = None,
-        enable_sapien_viewer: bool = True,
-        use_env_states: bool = False,
-        target_control_mode: Optional[str] = None,
-        verbose: bool = False
+        enable_sapien_viewer: bool = True
     ) -> None:
         self.cameras = cameras
         self.shape_meta = shape_meta
@@ -61,10 +48,6 @@ class ManiskillEnv():
         self.render_size = render_size
         self.image_mask_keys = image_mask_keys or ['front_camera_masks']  # 默认使用front_camera_masks
         self.enable_sapien_viewer = enable_sapien_viewer
-        self.use_env_states = use_env_states  # 新增：是否使用环境状态回放
-        self.current_env_state = None  # 新增：保存当前环境状态
-        self.target_control_mode = target_control_mode  # 新增：目标控制模式
-        self.verbose = verbose  # 新增：是否打印详细信息
         
         # 为了与MultiStepWrapper兼容，设置这些属性
         self.enable_temporal_ensemble = False
@@ -89,41 +72,21 @@ class ManiskillEnv():
         # - pd_ee_delta_pose: 控制末端姿态增量
         self.control_mode = control_mode
         
-        try:
-            self.env = gym.make(
-                env_id,
-                obs_mode=obs_mode,
-                control_mode=control_mode,
-                render_mode=render_mode,
-                reward_mode=reward_mode,
-                sensor_configs=dict(shader_pack=shader),
-                human_render_camera_configs=dict(shader_pack=shader),
-                viewer_camera_configs=dict(shader_pack=shader),
-                sim_backend=sim_backend
-            )
-            
-            # 如果需要控制器转换，创建一个原始环境用于参考
-            if self.target_control_mode is not None and self.target_control_mode != control_mode:
-                print(f"创建原始环境用于控制器转换: {control_mode} -> {self.target_control_mode}")
-                self.ori_env = gym.make(
-                    env_id,
-                    obs_mode=obs_mode,
-                    control_mode=control_mode,
-                    render_mode="rgb_array",  # 不需要渲染原始环境
-                    reward_mode=reward_mode,
-                    sim_backend=sim_backend
-                )
-            else:
-                self.ori_env = None
-            
-            print(f"环境初始化成功: {env_id}")
-            print(f"控制模式: {self.env.unwrapped.control_mode}")
-            print(f"观察模式: {self.env.unwrapped.obs_mode}")
-            print(f"仿真后端: {self.env.unwrapped.backend.sim_backend}")
-        except Exception as e:
-            print(f"环境初始化失败: {e}")
-            traceback.print_exc()
-            raise e
+        self.env = gym.make(
+            env_id,
+            obs_mode=obs_mode,
+            control_mode=control_mode,
+            render_mode=render_mode,
+            reward_mode=reward_mode,
+            sensor_configs=dict(shader_pack=shader),
+            human_render_camera_configs=dict(shader_pack=shader),
+            viewer_camera_configs=dict(shader_pack=shader),
+            sim_backend=sim_backend
+        )
+        
+
+        # if hasattr(self.env.unwrapped, 'agent') and hasattr(self.env.unwrapped, 'control_mode'):
+        #     print(f"控制模式: {self.env.unwrapped.control_mode}")
         
         # 初始化空间
         self._init_observation_space()
@@ -131,13 +94,6 @@ class ManiskillEnv():
         
         # 单个观察缓存
         self.obs_buffer = None
-        
-        # 错误恢复尝试次数
-        self.max_retry = 3
-        
-        # 记录成功的步数
-        self.successful_steps = 0
-        self.total_steps = 0
     
     def _init_observation_space(self):
         """初始化观察空间并确保格式一致"""
@@ -206,60 +162,30 @@ class ManiskillEnv():
                 dtype=np.float32
             )
 
-    def _save_current_state(self):
-        """保存当前环境状态，用于出错时恢复"""
-        try:
-            if not self.use_env_states:
-                return
-                
-            # 获取并保存当前环境状态
-            state_dict = self.env.unwrapped.get_state_dict()
-            self.current_env_state = state_dict
-        except Exception as e:
-            print(f"保存环境状态失败: {e}")
-    
     def reset(self, seed=None, options=None):
-        """重置环境并保存初始状态"""
-        try:
-            # 重置环境
-            print(f"重置环境, seed={seed}")
-            result = self.env.reset(seed=seed, options=options)
-            
-            # 如果有原始环境，也重置它
-            if self.ori_env is not None:
-                self.ori_env.reset(seed=seed, options=options)
-            
-            # 处理新版本gymnasium返回的(obs, info)格式
-            if isinstance(result, tuple) and len(result) == 2:
-                obs, info = result
-                # 处理观察数据为所需格式
-                processed_obs = self._process_obs(obs)
-            else:
-                # 处理观察数据为所需格式
-                processed_obs = self._process_obs(result)
-                info = {}
-            
-            # 确保所有必要的键都存在
-            processed_obs = self._ensure_obs_keys(processed_obs)
-            
-            # 保存当前观察作为缓冲区
-            self.obs_buffer = processed_obs
-            
-            # 保存初始环境状态
-            self._save_current_state()
-            
-            # 如果启用了Sapien查看器，渲染当前环境状态
-            if self.enable_sapien_viewer:
-                self.env.render_human()
-            
-            return processed_obs
-        except Exception as e:
-            print(f"环境重置失败: {e}")
-            traceback.print_exc()
-            
-            # 创建一个空的默认观察
-            dummy_obs = self._ensure_obs_keys({})
-            return dummy_obs
+        """重置环境"""
+        result = self.env.reset(seed=seed, options=options)
+        # 处理新版本gymnasium返回的(obs, info)格式
+        if isinstance(result, tuple) and len(result) == 2:
+            obs, info = result
+            # 处理观察数据为所需格式
+            processed_obs = self._process_obs(obs)
+        else:
+            # 处理观察数据为所需格式
+            processed_obs = self._process_obs(result)
+            info = {}
+        
+        # 确保所有必要的键都存在
+        processed_obs = self._ensure_obs_keys(processed_obs)
+        
+        # 保存当前观察作为缓冲区
+        self.obs_buffer = processed_obs
+        
+        # 如果启用了Sapien查看器，渲染当前环境状态
+        if self.enable_sapien_viewer:
+            self.env.render_human()
+        
+        return processed_obs
     
     def _process_obs(self, obs):
         """
@@ -309,6 +235,7 @@ class ManiskillEnv():
             rgb = rgb.cpu().numpy()
             
             # 转换格式并确保是正确的维度 [H, W, C]
+
             rgb = rgb.squeeze()# 有batch维度，去掉（256, 256, 3)
             # 确保图像是uint8类型，范围0-255
             if rgb.dtype != np.uint8:
@@ -361,13 +288,14 @@ class ManiskillEnv():
     
         return processed_obs
     
-    def _convert_action(self, action):
-        """转换动作格式为环境需要的格式，处理可能的维度问题"""
+    def step(self, action):
+        """执行一步动作"""
         try:
+            # 将动作转换为控制器需要的字典格式
             if action.shape[0] == 7:
                 # 提取动作分量
                 translation = action[:3]
-                rotation_euler = action[3:6]
+                rotation_euler = action[3: 6]
                 gripper_action = action[6]
                 
                 # 构建动作字典
@@ -377,142 +305,51 @@ class ManiskillEnv():
                 }
                 
                 # 转换为Tensor
+                import torch
                 action_dict = {k: torch.tensor(v, dtype=torch.float32) for k, v in action_dict.items()}
                 
                 # 使用控制器转换动作
                 controller_action = self.env.unwrapped.agent.controller.from_action_dict(action_dict)
+            # 最后一个维度是额外信息，没什么用
+            if controller_action.shape[0] == 7:
+                controller_action = np.concatenate([controller_action, [0]])
+                controller_action = torch.tensor(controller_action, dtype=torch.float32)
+                action = controller_action
                 
-                # 检查是否需要补充额外维度
-                if hasattr(controller_action, 'shape') and controller_action.shape[0] == 7:
-                    controller_action = np.concatenate([controller_action, [0]])
-                    controller_action = torch.tensor(controller_action, dtype=torch.float32)
-                
-                return controller_action
-            return action
-        except Exception as e:
-            print(f"动作转换出错: {e}")
-            return action  # 返回原始动作作为回退
-    
-    def _convert_controller_action(self, action):
-        """使用来自replay_trajectory中的控制器转换方法转换动作"""
-        if self.ori_env is None or self.target_control_mode is None:
-            return self._convert_action(action)
-        
-        try:
-            # 重置原始环境和目标环境到相同状态
-            if hasattr(self, 'current_env_state') and self.current_env_state is not None:
-                self.ori_env.reset()
-                self.ori_env.unwrapped.set_state_dict(copy.deepcopy(self.current_env_state))
+            # 执行环境step
+            result = self.env.step(action)
             
-            # 原始环境的控制模式
-            ori_control_mode = self.control_mode
-            
-            # 执行控制器转换
-            if ori_control_mode == "pd_joint_pos":
-                # 使用from_pd_joint_pos进行转换
-                action_tensor = torch.tensor(action, dtype=torch.float32).unsqueeze(0)
-                info = action_conversion.from_pd_joint_pos(
-                    self.target_control_mode,
-                    [action],  # 使用列表格式，保持与replay_trajectory兼容
-                    self.ori_env,
-                    self.env,
-                    render=False,
-                    verbose=self.verbose
-                )
-                # 如果有返回的动作，使用它
-                if hasattr(info, 'get') and info.get('converted_action') is not None:
-                    return info['converted_action']
-                
-            elif ori_control_mode == "pd_joint_delta_pos":
-                # 使用from_pd_joint_delta_pos进行转换
-                info = action_conversion.from_pd_joint_delta_pos(
-                    self.target_control_mode,
-                    [action],  # 使用列表格式，保持与replay_trajectory兼容
-                    self.ori_env,
-                    self.env,
-                    render=False,
-                    verbose=self.verbose
-                )
-                # 如果有返回的动作，使用它
-                if hasattr(info, 'get') and info.get('converted_action') is not None:
-                    return info['converted_action']
-            
-            # 如果转换失败，回退到普通转换
-            return self._convert_action(action)
-            
-        except Exception as e:
-            print(f"控制器转换失败: {e}")
-            traceback.print_exc()
-            # 回退到普通转换
-            return self._convert_action(action)
-    
-    def step(self, action):
-        """执行一步动作，参考replay_trajectory.py的实现方式，具有错误恢复能力"""
-        self.total_steps += 1
-        
-        try:
-            # # 1. 转换动作格式
-            # if self.target_control_mode is not None and self.target_control_mode != self.control_mode:
-            #     # 使用控制器转换
-            #     converted_action = self._convert_controller_action(action)
-            # else:
-                # 使用普通转换
-            converted_action = self._convert_action(action)
-            
-            # 2. 执行环境step
-            result = self.env.step(converted_action)
-            
-            # 3. 处理gymnasium格式的返回值
+            # 处理gymnasium格式的返回值
             if len(result) == 5:
                 obs, reward, terminated, truncated, info = result
                 done = terminated or truncated
             else:
                 obs, reward, done, info = result
                 
-            # 4. 处理观察数据
+            # 处理观察数据
             processed_obs = self._process_obs(obs)
+            #processed_obs = self._ensure_obs_keys(processed_obs)
             
-            # 5. 保存当前环境状态用于可能的恢复
-            self._save_current_state()
-            
-            # 6. 保存当前观察作为缓冲区
+            # 保存当前观察
             self.obs_buffer = processed_obs
             
-            # 7. 如果启用了Sapien查看器，渲染当前环境状态
+            # 如果启用了Sapien查看器，渲染当前环境状态
             if self.enable_sapien_viewer:
                 self.env.render_human()
             
-            self.successful_steps += 1
-                            
             return processed_obs, reward, done, info
             
         except Exception as e:
-            print(f"环境step出错: {e}")
-            
-            # 尝试从当前环境状态恢复
-            for retry in range(self.max_retry):
-                try:
-                    print(f"尝试恢复环境状态 (第{retry+1}次尝试)")
-                    
-                    # 如果有保存的环境状态，尝试恢复
-                    if self.use_env_states and self.current_env_state is not None:
-                        self.env.unwrapped.set_state_dict(self.current_env_state)
-                        fixed_obs = self.env.unwrapped.get_obs()
-                        processed_obs = self._process_obs(fixed_obs)
-                        
-                        # 如果恢复成功，返回当前观察并继续
-                        print(f"环境状态恢复成功 (第{retry+1}次尝试)")
-                        return processed_obs, 0.0, False, {"error_recovered": True, "retry": retry+1}
-                except Exception as recovery_error:
-                    print(f"恢复环境状态失败 (第{retry+1}次尝试): {recovery_error}")
-            
-            # 如果所有恢复尝试都失败，使用上一次缓存的观察作为回退
-            print("所有恢复尝试均失败，使用缓存观察作为回退")
+            print(f"环境step出错:{e}")
+            import traceback
+            traceback.print_exc()
+            # 创建一个空观察作为fallback
             if self.obs_buffer is not None:
-                return self.obs_buffer, 0.0, True, {"error": str(e), "recovery_failed": True}
+                return self.obs_buffer, 0.0, True, {"error": str(e)}
             else:
+                # 如果没有缓存的观察，尝试创建一个基本的观察结构
                 dummy_obs = self._ensure_obs_keys({})
-                return dummy_obs, 0.0, True, {"error": str(e), "recovery_failed": True}
+                return dummy_obs, 0.0, True, {"error": str(e)}
     
     def render(self):
         """渲染环境"""
@@ -522,7 +359,9 @@ class ManiskillEnv():
             
         # 获取原始渲染结果
         frame = self.env.render()
-        
+        #print(f'frame: {frame}')
+        #print(f'frame type: {type(frame)}')
+        #print(f'frame shape: {frame.shape}')
         # 确保帧数据是numpy数组，并且类型是uint8
         if frame is not None:
             # 如果是PyTorch张量，转换为numpy
@@ -571,17 +410,7 @@ class ManiskillEnv():
     
     def close(self):
         """关闭环境"""
-        try:
-            print(f"关闭环境，成功率: {self.successful_steps}/{self.total_steps} = {self.successful_steps/self.total_steps*100:.2f}%")
-            
-            # 关闭原始环境（如果存在）
-            if hasattr(self, 'ori_env') and self.ori_env is not None:
-                self.ori_env.close()
-                
-            return self.env.close()
-        except Exception as e:
-            print(f"关闭环境时出错: {e}")
-            traceback.print_exc()
+        return self.env.close()
     
     @property
     def observation_space(self):

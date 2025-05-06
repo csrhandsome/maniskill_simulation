@@ -150,6 +150,10 @@ class PullCubeEnv(BaseEnv):
         upper_camera_pose = look_at(eye=[0.2, -0.3, 0.2], target=[-0.1, 0, 0.1])
         upper_camera_config = CameraConfig("upper_camera", upper_camera_pose,
                                             256, 256, np.pi / 2, 0.01, 100)
+        # 渲染视角
+        # upper_camera_pose = look_at([0.6, 0.7, 0.6], [0.0, 0.0, 0.35])
+        # upper_camera_config = CameraConfig("upper_camera", upper_camera_pose,
+        #                                     256, 256, 1, 0.01, 100)
         return [upper_camera_config]
     
     def _setup_sensors(self, options: dict):

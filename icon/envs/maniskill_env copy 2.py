@@ -451,13 +451,13 @@ class ManiskillEnv():
         self.total_steps += 1
         
         try:
-            # # 1. 转换动作格式
-            # if self.target_control_mode is not None and self.target_control_mode != self.control_mode:
-            #     # 使用控制器转换
-            #     converted_action = self._convert_controller_action(action)
-            # else:
+            # 1. 转换动作格式
+            if self.target_control_mode is not None and self.target_control_mode != self.control_mode:
+                # 使用控制器转换
+                converted_action = self._convert_controller_action(action)
+            else:
                 # 使用普通转换
-            converted_action = self._convert_action(action)
+                converted_action = self._convert_action(action)
             
             # 2. 执行环境step
             result = self.env.step(converted_action)

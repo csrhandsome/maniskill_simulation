@@ -5,7 +5,7 @@ import zarr
 from pathlib import Path
 import glob
 import tqdm
-
+from scipy.spatial.transform import Rotation as R
 
 def convert_pose_representation(pose):
     """
@@ -127,12 +127,14 @@ def hdf5_to_zarr(h5_files, zarr_path, resize=False, target_size=(256, 256), traj
                 # 结合成低维状态向量 (7 joint positions + 6 end-effector pose + 1 gripper status)
                 # Panda机器人qpos为9维：前7维是关节位置，后2维是夹爪状态(两个夹爪)
                 # 我们只需要第一个夹爪状态，因为两个夹爪通常是镜像的
+                # 正确的转换
                 low_dims = np.concatenate([
-                    qpos[:, :7],  # 前7个关节位置
-                    tcp_pose[:, :6],  # 末端执行器位姿 (6维)
-                    qpos[:, 7:8],  # 只取第一个夹爪状态
+                    qpos[:, :7],                           # 前7个关节位置 (7维)
+                    tcp_pose[:, :3],                       # TCP位置坐标 (3维)
+                    R.from_quat(tcp_pose[:, 3:7]).as_euler('xyz'),  # TCP旋转(四元数转欧拉角) (3维)
+                    qpos[:, 7:8],                          # 只取第一个夹爪状态 (1维)
                 ], axis=1)
-                
+                                
                 # 提取图像数据
                 front_images = traj_group['obs/sensor_data/upper_camera/rgb'][:-1]
                 wrist_images = traj_group['obs/sensor_data/phone_camera/rgb'][:-1]
@@ -142,7 +144,7 @@ def hdf5_to_zarr(h5_files, zarr_path, resize=False, target_size=(256, 256), traj
                 wrist_masks = traj_group['obs/sensor_data/phone_camera/segmentation'][:-1, :, :, 0]  # 取第一个通道
                 
                 # 转换为二值掩码：机械臂部分(ID为1,10,12,14,16,17,18,19)为True，其他部分为False
-                robot_ids = [1, 2, 10, 12, 14, 16, 17, 18, 19]  # 机械臂相关的ID
+                robot_ids = [1,2,3,4,5,6,7,8,9,10,12,14,18,19] # 机械臂相关的ID
                 
                 # 创建与原掩码形状相同的二值掩码
                 binary_front_masks = np.isin(front_masks, robot_ids).astype(np.uint8)
@@ -202,15 +204,15 @@ def hdf5_to_zarr(h5_files, zarr_path, resize=False, target_size=(256, 256), traj
         all_wrist_masks = np.concatenate(all_wrist_masks, axis=0)
         
         # 保存到数据组
-        data_group.create_dataset('actions', data=all_actions)
-        data_group.create_dataset('low_dims', data=all_low_dims)
-        data_group.create_dataset('front_camera_images', data=all_front_images)
-        data_group.create_dataset('wrist_camera_images', data=all_wrist_images)
-        data_group.create_dataset('front_camera_masks', data=all_front_masks)
-        data_group.create_dataset('wrist_camera_masks', data=all_wrist_masks)
+        data_group.create_array('actions', data=all_actions)
+        data_group.create_array('low_dims', data=all_low_dims)
+        data_group.create_array('front_camera_images', data=all_front_images)
+        data_group.create_array('wrist_camera_images', data=all_wrist_images)
+        data_group.create_array('front_camera_masks', data=all_front_masks)
+        data_group.create_array('wrist_camera_masks', data=all_wrist_masks)
         
         # 保存轨迹结束点
-        meta_group.create_dataset('episode_ends', data=np.array(episode_ends))
+        meta_group.create_array('episode_ends', data=np.array(episode_ends))
     
     print(f"转换完成，保存到: {zarr_path}")
     print(f"总共转换了 {traj_counter} 条轨迹")
